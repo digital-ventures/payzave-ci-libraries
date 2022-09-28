@@ -135,7 +135,8 @@ jobs:
           version-major: false
           version-minor: false
           version-patch: true
-          m2-home-folder: '.m2'
+          maven-args: "-gs /github/home/.m2/settings.xml"
+          maven-options: "-Dmaven.repo.local=.m2 -DskipTests"
 
       - name: deployArtifact
         if: contains( github.ref_name, 'dev' )
