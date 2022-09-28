@@ -50,7 +50,7 @@ jobs:
       #     server-password: MAVEN_CENTRAL_TOKEN
 
       - name: SetupMaven
-        uses: s4u/maven-settings-action@v2.6.0
+        uses: whelk-io/maven-settings-xml-action@v4
         with:
           repositories: |
             [
