@@ -1,0 +1,283 @@
+on:
+  workflow_call:
+jobs:
+  BuildAndRelease:
+    # runs-on: ubuntu-latest
+    runs-on: [self-hosted, b2p]
+    container: node:14.18.3-alpine3.15
+    steps:
+      - name: AddAPK
+        run: apk --no-cache add git jq tar openssh docker-cli wget unzip
+
+      - name: CheckOut
+        uses: actions/checkout@v3
+        # with: 
+        #   ssh-key: "${{ secrets.SSH_PRIVATE_KEY }}"
+        #   ssh-strict: 'StrictHostKeyChecking=no'
+        #   submodules: 'true'   #set-safe-directory option of checkout didn't work
+
+      - name: GitConfig
+        run: |
+          git config --global user.name ${{ secrets.PAYZAVE_GIT_USER }}
+          git config --global user.email ${{ secrets.PAYZAVE_GIT_USER }}@dv.co.th
+          git config --global --add safe.directory ${GITHUB_WORKSPACE}
+        
+      - name: DockerLogin
+        uses: azure/docker-login@v1
+        with:
+          login-server: ${{ secrets.PAYZAVE_ACR_REGISTRY }}
+          username: ${{ secrets.PAYZAVE_ACR_USER }}
+          password: ${{ secrets.PAYZAVE_ACR_TOKEN }}
+          
+      - name: BuildTools
+        uses: yokawasa/action-setup-kube-tools@v0.7.1
+        with:
+          kustomize: '3.9.1' #'4.5.7'
+          skaffold: '1.39.1'
+          # skaffold: '1.17.2' #'1.39.1'
+          helm: '3.9.4'
+          kubectl: '1.17.8' #'1.20.2'
+          yq: '4.7.1'
+
+      - name: SetupNodeJS
+        uses: actions/setup-node@v3
+        with:
+          node-version: 14.18.3
+          # node-version: 15.5.1
+          # cache: 'npm'
+          # cache-dependency-path: package-lock.json
+
+      - name: Dump GitHub context
+        env:
+          GITHUB_CONTEXT: ${{ toJson(github) }}
+        run: echo "$GITHUB_CONTEXT"
+
+      - name: SonarQubeScan
+        # if: contains(github.ref_name, 'SONAR')
+        if: contains(github.ref, 'dev') && github.event_name == 'push'
+        uses: sonarsource/sonarqube-scan-action@master
+        env:
+          SONAR_TOKEN: ${{ secrets.PAYZAVE_SONARQUBE_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.PAYZAVE_SONARQUBE_HOST_URL }}
+          LC_ALL: "en_US.UTF-8"
+        with:
+          projectBaseDir: src
+          args: >
+            -Dsonar.projectName=Payzave-${{ secrets.PAYZAVE_SERVICENAME }}-${{ github.ref_name }}
+            -Dsonar.projectKey=Payzave-${{ secrets.PAYZAVE_SERVICENAME }}-${{ github.ref_name }}
+        continue-on-error: true
+
+##### Release overlay/dev
+      - name: BuildContainerSnapshotImage #MERGED TRIGGER
+        if: contains(github.ref, 'dev') && github.event_name == 'push'
+        run: |
+          echo -e "\e[92m START BuildContainerSnapshotImage \e[0m"
+          skaffold build -q > build.json
+          echo -e "\e[92m FINISH BuildContainerSnapshotImage \e[0m"
+          IMG_NAME=$(jq -r ".builds[0].imageName" build.json)
+          IMG_WITH_TAG=$(jq -r ".builds[0].tag" build.json)
+          IMG_VERSION=$(echo ${IMG_WITH_TAG}  | cut -d ":" -f 2 | cut -d "@" -f 1)
+          SVC_NAME=$(echo ${IMG_NAME} | grep -o '[^/]*$')
+          echo IMG_NAME="${IMG_NAME}" >> variables
+          echo IMG_WITH_TAG="${IMG_WITH_TAG}" >> variables
+          echo IMG_VERSION="${IMG_VERSION}" >> variables
+          echo SVC_NAME="${{ secrets.PAYZAVE_SERVICENAME }}" >> variables
+
+      - name: UpdateDeploymentSnapshotTemplate #MERGED TRIGGER
+        if: contains(github.ref, 'dev') && github.event_name == 'push'
+        run: |
+          echo -e "\e[92m START UpdateDeploymentSnapshotTemplate \e[0m"
+          source variables
+
+          # git clone https://${{ secrets.PAYZAVE_GITLAB_USER }}:${{ secrets.PAYZAVE_GITLAB_TOKEN }}@gitlab.com/payzave-gitops/payzave-app-deployment.git
+          git clone https://${{ secrets.PAYZAVE_GIT_USER }}:${{ secrets.PAYZAVE_GIT_TOKEN }}@github.com/digital-ventures/payzave-app-deployment.git
+          cd payzave-app-deployment
+
+          git checkout nonprd
+          cd overlay/dev
+          kustomize edit set image ${IMG_NAME}=${IMG_NAME}:${IMG_VERSION}
+          cd ../..
+          git add -A
+          git diff --cached --exit-code --quiet && exit 0 || echo -e "\e[96m Detected Changes"
+          git commit -a -m "Update deployment image [${IMG_NAME}:${IMG_VERSION}]"
+          ###### Handle Pull & Push Retry ######
+          retry=0
+          while [ "${retry}" -lt 3 ]
+          do
+            # git pull https://${{ secrets.PAYZAVE_GITLAB_USER }}:${{ secrets.PAYZAVE_GITLAB_TOKEN }}@gitlab.com/payzave-gitops/payzave-app-deployment.git
+            # git push https://${{ secrets.PAYZAVE_GITLAB_USER }}:${{ secrets.PAYZAVE_GITLAB_TOKEN }}@gitlab.com/payzave-gitops/payzave-app-deployment.git
+            git pull https://${{ secrets.PAYZAVE_GIT_USER }}:${{ secrets.PAYZAVE_GIT_TOKEN }}@github.com/digital-ventures/payzave-app-deployment.git
+            git push https://${{ secrets.PAYZAVE_GIT_USER }}:${{ secrets.PAYZAVE_GIT_TOKEN }}@github.com/digital-ventures/payzave-app-deployment.git
+
+            ppResult=$?
+            echo -e "\e[31m P&P Result \e[0m : \e[96m ${ppResult}"
+            if [[ "${ppResult}" == "" || "${ppResult}" -eq 0 || -z "${ppResult}" ]]; then
+              echo -e "\e[92m Update Deployment success \e[0m"
+              break
+            else
+              retry=$((retry+1))
+              if [ "${retry}" -eq 3 ]; then
+                echo -e "\e[31m Update Deployment failed, limit exceeded, MANUAL RETRY NEEDED \e[0m"
+                exit 1
+              else
+                echo -e "\e[93m Update Deployment failed, retrying : \e[96m ${retry} \e[0m"
+              fi
+            fi
+          done
+          echo -e "\e[92m ${IMG_NAME}:${IMG_VERSION} \e[0m"
+          echo -e "\e[92m FINISH UpdateDeploymentSnapshotTemplate \e[0m"
+
+##### Test Before Release overlay/sit
+      - name: PrepareRelease
+        if: contains(github.ref, 'master') && github.event_name == 'push' && !(contains(github.event.head_commit.message, 'Release\s\d\.\d\.\d/'))
+        run: |
+          npm install --legacy-peer-deps
+          git add -A
+          git diff --cached --exit-code --quiet && echo "directory is clean, continue without commit changes" || git commit -m "update package-lock.json"
+          npm run release
+          echo "TAG_VERSION=$(jq -r ".version" package.json | sed 's/-SNAPSHOT.0//')" >> $GITHUB_ENV
+          npm run prepare-snapshot
+
+##### Release overlay/sit
+      - name: BuildContainerReleaseImage
+        if: contains(github.ref, 'master') && github.event_name == 'push' && !(contains(github.event.head_commit.message, 'Release\s\d\.\d\.\d/'))
+        run: |
+          echo -e "\e[92m START BuildContainerReleaseImage \e[0m"
+          echo "TAG_VERSION = ${{ env.TAG_VERSION }}"
+          skaffold build -q --tag ${{ env.TAG_VERSION }} > build.json
+          echo -e "\e[92m FINISH BuildContainerReleaseImage \e[0m"
+          IMG_NAME=$(jq -r ".builds[0].imageName" build.json)
+          IMG_WITH_TAG=$(jq -r ".builds[0].tag" build.json)
+          IMG_VERSION=$(echo ${IMG_WITH_TAG}  | cut -d ":" -f 2 | cut -d "@" -f 1)
+          SVC_NAME=$(echo ${IMG_NAME} | grep -o '[^/]*$')
+          echo IMG_NAME="${IMG_NAME}" >> variables
+          echo IMG_WITH_TAG="${IMG_WITH_TAG}" >> variables
+          echo IMG_VERSION="${IMG_VERSION}" >> variables
+          echo SVC_NAME="${{ secrets.PAYZAVE_SERVICENAME }}" >> variables
+
+      - name: UpdateDeploymentReleaseTemplate
+        if: contains(github.ref, 'master') && github.event_name == 'push' && !(contains(github.event.head_commit.message, 'Release\s\d\.\d\.\d/'))
+        run: |
+          echo -e "\e[92m START UpdateDeploymentReleaseTemplate \e[0m"
+          source variables
+
+          # git clone https://${{ secrets.PAYZAVE_GITLAB_USER }}:${{ secrets.PAYZAVE_GITLAB_TOKEN }}@gitlab.com/payzave-gitops/payzave-app-deployment.git
+          git clone https://${{ secrets.PAYZAVE_GIT_USER }}:${{ secrets.PAYZAVE_GIT_TOKEN }}@github.com/digital-ventures/payzave-app-deployment.git
+          cd payzave-app-deployment
+          
+          git checkout nonprd
+          cd overlay/sit
+          kustomize edit set image ${IMG_NAME}=${IMG_NAME}:${IMG_VERSION}
+          cd ../..
+          git add -A
+          git diff --cached --exit-code --quiet && exit 0 || echo -e "\e[96m Detected Changes"
+          git commit -a -m "Update deployment image [${IMG_NAME}:${IMG_VERSION}]"
+          ###### Handle Pull & Push Retry ######
+          retry=0
+          while [ "${retry}" -lt 3 ]
+          do
+            # git pull https://${{ secrets.PAYZAVE_GITLAB_USER }}:${{ secrets.PAYZAVE_GITLAB_TOKEN }}@gitlab.com/payzave-gitops/payzave-app-deployment.git
+            # git push https://${{ secrets.PAYZAVE_GITLAB_USER }}:${{ secrets.PAYZAVE_GITLAB_TOKEN }}@gitlab.com/payzave-gitops/payzave-app-deployment.git
+            git pull https://${{ secrets.PAYZAVE_GIT_USER }}:${{ secrets.PAYZAVE_GIT_TOKEN }}@github.com/digital-ventures/payzave-app-deployment.git
+            git push https://${{ secrets.PAYZAVE_GIT_USER }}:${{ secrets.PAYZAVE_GIT_TOKEN }}@github.com/digital-ventures/payzave-app-deployment.git
+
+            ppResult=$?
+            echo -e "\e[31m P&P Result \e[0m : \e[96m ${ppResult}"
+            if [[ "${ppResult}" == "" || "${ppResult}" -eq 0 || -z "${ppResult}" ]]; then
+              echo -e "\e[92m Update Deployment success \e[0m"
+              break
+            else
+              retry=$((retry+1))
+              if [ "${retry}" -eq 3 ]; then
+                echo -e "\e[31m Update Deployment failed, limit exceeded, MANUAL RETRY NEEDED \e[0m"
+                exit 1
+              else
+                echo -e "\e[93m Update Deployment failed, retrying : \e[96m $retry \e[0m"
+              fi
+            fi
+          done
+          echo -e "\e[92m ${IMG_NAME}:${IMG_VERSION} \e[0m"
+          echo -e "\e[92m FINISH UpdateDeploymentReleaseTemplate \e[0m"
+
+##### Test Before Release overlay/hotfix
+      - name: PrepareHotfixRelease
+        if: github.ref_name == 'hotfix' && github.event_name == 'push' && (contains(github.event.head_commit.message, 'pre tag commit hf')) && !(contains(github.event.head_commit.message, 'Release\s\d\.\d\.\d/'))
+        run: |
+          git remote set-url origin https://github.com/${{ github.repository }}
+          git checkout ${{ github.ref_name }}
+          npm install --legacy-peer-deps
+
+          HFTAG=$(cat package.json | grep version | cut -d':' -f2 | cut -d'"' -f2 | cut -d'-' -f1)
+          V4TAG=$(cat package.json | grep version | cut -d'.' -f4 | cut -d'"' -f1)
+          V3TAG=$(echo ${HFTAG} | cut -d'.' -f3)
+          V2TAG=$(echo ${HFTAG} | cut -d'.' -f2)
+          V1TAG=$(echo ${HFTAG} | cut -d'.' -f1)
+          sed -i -e "s/release-it --ci.*$/release-it --git.tagName=${V1TAG}.${V2TAG}.${V3TAG}-hotfix --ci -VV --no-git.requireUpstream\"/g" package.json
+          
+          git add -A
+          git diff --cached --exit-code --quiet && echo "directory is clean, continue without commit changes" || git commit -m "update package-lock.json and package.json"
+          npm run release
+          echo "TAG_VERSION=${V1TAG}.${V2TAG}.${V3TAG}-hotfix" >> $GITHUB_ENV
+          npm run prepare-snapshot
+
+##### Release overlay/hotfix
+      - name: BuildContainerHotfixReleaseImage
+        if: github.ref_name == 'hotfix' && github.event_name == 'push' && (contains(github.event.head_commit.message, 'pre tag commit hf')) && !(contains(github.event.head_commit.message, 'Release\s\d\.\d\.\d/'))
+        # if: github.event_name == 'push' && contains( github.ref, 'refs/tag' ) && contains(github.event.head_commit.message, 'Gradle Release Plugin')
+        run: |
+          echo -e "\e[92m START BuildContainerHotfixReleaseImage \e[0m"
+          echo "TAG_VERSION = ${{ env.TAG_VERSION }}"
+          skaffold build -q --tag ${{ env.TAG_VERSION }} > build.json
+          echo -e "\e[92m FINISH BuildContainerHotfixReleaseImage \e[0m"
+          IMG_NAME=$(jq -r ".builds[0].imageName" build.json)
+          IMG_WITH_TAG=$(jq -r ".builds[0].tag" build.json)
+          IMG_VERSION=$(echo ${IMG_WITH_TAG}  | cut -d ":" -f 2 | cut -d "@" -f 1)
+          SVC_NAME=$(echo ${IMG_NAME} | grep -o '[^/]*$')
+          echo IMG_NAME="${IMG_NAME}" >> variables
+          echo IMG_WITH_TAG="${IMG_WITH_TAG}" >> variables
+          echo IMG_VERSION="${IMG_VERSION}" >> variables
+          echo SVC_NAME="${{ secrets.PAYZAVE_SERVICENAME }}" >> variables
+
+      - name: UpdateDeploymentHotfixReleaseTemplate
+        if: github.ref_name == 'hotfix' && github.event_name == 'push' && (contains(github.event.head_commit.message, 'pre tag commit hf')) && !(contains(github.event.head_commit.message, 'Release\s\d\.\d\.\d/'))
+        # if: github.event_name == 'push' && contains( github.ref, 'refs/tag' ) && contains(github.event.head_commit.message, 'Gradle Release Plugin')
+        run: |
+          echo -e "\e[92m START UpdateDeploymentHotfixReleaseTemplate \e[0m"
+          source variables
+          # git clone https://${{ secrets.PAYZAVE_GITLAB_USER }}:${{ secrets.PAYZAVE_GITLAB_TOKEN }}@gitlab.com/payzave-gitops/payzave-app-deployment.git
+          git clone https://${{ secrets.PAYZAVE_GIT_USER }}:${{ secrets.PAYZAVE_GIT_TOKEN }}@github.com/digital-ventures/payzave-app-deployment.git
+          cd payzave-app-deployment
+          
+          git checkout nonprd
+          cd overlay/sit
+          kustomize edit set image ${IMG_NAME}=${IMG_NAME}:${IMG_VERSION}
+          cd ../..
+          git add -A
+          git diff --cached --exit-code --quiet && exit 0 || echo -e "\e[96m Detected Changes"
+          git commit -a -m "Update deployment image [${IMG_NAME}:${IMG_VERSION}]"
+          ###### Handle Pull & Push Retry ######
+          retry=0
+          while [ "${retry}" -lt 3 ]
+          do
+            # git pull https://${{ secrets.PAYZAVE_GITLAB_USER }}:${{ secrets.PAYZAVE_GITLAB_TOKEN }}@gitlab.com/payzave-gitops/payzave-app-deployment.git
+            # git push https://${{ secrets.PAYZAVE_GITLAB_USER }}:${{ secrets.PAYZAVE_GITLAB_TOKEN }}@gitlab.com/payzave-gitops/payzave-app-deployment.git
+            git pull https://${{ secrets.PAYZAVE_GIT_USER }}:${{ secrets.PAYZAVE_GIT_TOKEN }}@github.com/digital-ventures/payzave-app-deployment.git
+            git push https://${{ secrets.PAYZAVE_GIT_USER }}:${{ secrets.PAYZAVE_GIT_TOKEN }}@github.com/digital-ventures/payzave-app-deployment.git
+            
+            ppResult=$?
+            echo -e "\e[31m P&P Result \e[0m : \e[96m ${ppResult}"
+            if [[ "${ppResult}" == "" || "${ppResult}" -eq 0 || -z "${ppResult}" ]]; then
+              echo -e "\e[92m Update Deployment success \e[0m"
+              break
+            else
+              retry=$((retry+1))
+              if [ "${retry}" -eq 3 ]; then
+                echo -e "\e[31m Update Deployment failed, limit exceeded, MANUAL RETRY NEEDED \e[0m"
+                exit 1
+              else
+                echo -e "\e[93m Update Deployment failed, retrying : \e[96m $retry \e[0m"
+              fi
+            fi
+          done
+          echo -e "\e[92m ${IMG_NAME}:${IMG_VERSION} \e[0m"
+          echo -e "\e[92m FINISH UpdateDeploymentHotfixReleaseTemplate \e[0m"
