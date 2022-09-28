@@ -139,8 +139,8 @@ jobs:
           maven-options: "-Dmaven.repo.local=.m2 -DskipTests"
 
       - name: deployArtifact
-        if: contains( github.ref_name, 'dev' )
-        # if: contains( github.ref_name, 'dev' ) || github.ref_name == 'master' && !(contains(github.event.head_commit.message, 'maven-release-plugin'))
+        # if: contains( github.ref_name, 'dev' )
+        if: contains( github.ref_name, 'dev' ) || github.ref_name == 'master' && !(contains(github.event.head_commit.message, 'maven-release-plugin'))
         run: |
           mvn -gs /github/home/.m2/settings.xml -Dmaven.repo.local=.m2 -DskipTests clean deploy
 
