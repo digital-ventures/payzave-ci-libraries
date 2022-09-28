@@ -117,7 +117,7 @@ jobs:
             ]
 
       - name: unitTest
-        if: contains( github.ref_name, 'develop' )
+        if: contains( github.ref_name, 'dev' )
         run: |
           mvn -gs /github/home/.m2/settings.xml -Dmaven.repo.local=.m2 clean test
 
@@ -127,6 +127,6 @@ jobs:
           mvn -gs /github/home/.m2/settings.xml -B -Dmaven.repo.local=.m2 -DskipTests clean release:prepare
 
       - name: deployArtifact
-        if: contains( github.ref_name, 'develop' ) && github.event_name == 'push' && !(contains(github.event.head_commit.message, ''))
+        if: contains( github.ref_name, 'dev' ) || github.event_name == 'push' && !(contains(github.event.head_commit.message, ''))
         run: |
           mvn -gs /github/home/.m2/settings.xml -Dmaven.repo.local=.m2 -DskipTests clean deploy
