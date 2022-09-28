@@ -136,7 +136,7 @@ jobs:
         if: contains( github.ref_name, 'develop' )
         run: |
           cat /github/home/.m2/settings.xml
-          mvn -s /github/home/.m2/settings.xml -gs /github/home/.m2/settings.xml -Dmaven.repo.local=.m2 clean test
+          mvn -gs /github/home/.m2/settings.xml -Dmaven.repo.local=.m2 clean test
         # env:
         #   MAVEN_USERNAME: ${{ secrets.PAYZAVE_NEXUS_USER }}
         #   MAVEN_CENTRAL_TOKEN: ${{ secrets.PAYZAVE_NEXUS_PASSWORD }}
