@@ -121,23 +121,25 @@ jobs:
         run: |
           mvn -gs /github/home/.m2/settings.xml -Dmaven.repo.local=.m2 clean test
 
-      - name: GetTagVersion
-        if: github.ref_name == 'master' && !(contains(github.event.head_commit.message, 'maven-release-plugin'))
-        run: |
-          echo "TAG_VERSION=$(cat pom.xml | grep 'SNAPSHOT' | sed 's/-SNAPSHOT//'| sed 's/<version>//' | sed 's/<\/version>//')" >> ${GITHUB_ENV}
+      # - name: prepareRelease
+      #   if: github.ref_name == 'master' && !(contains(github.event.head_commit.message, 'maven-release-plugin'))
+      #   run: |
+      #     mvn -gs /github/home/.m2/settings.xml -B -Dmaven.repo.local=.m2 -DskipTests clean release:prepare
 
-      - name: ${{ env.TAG_VERSION }}
+      - name: Release
         if: github.ref_name == 'master' && !(contains(github.event.head_commit.message, 'maven-release-plugin'))
-        run: |
-          echo "TAG_VERSION = ${{ env.TAG_VERSION }}"
-
-      - name: prepareRelease
-        if: github.ref_name == 'master' && !(contains(github.event.head_commit.message, 'maven-release-plugin'))
-        run: |
-          mvn -gs /github/home/.m2/settings.xml -B -Dmaven.repo.local=.m2 -DskipTests clean release:prepare
+        uses: qcastel/github-actions-maven-release@master
+        with:
+          release-branch-name: "master"
+          skip-perform: true
+          version-major: false
+          version-minor: false
+          version-patch: true
+          m2-home-folder: '.m2'
 
       - name: deployArtifact
-        if: contains( github.ref_name, 'dev' ) || github.ref_name == 'master' && !(contains(github.event.head_commit.message, 'maven-release-plugin'))
+        if: contains( github.ref_name, 'dev' )
+        # if: contains( github.ref_name, 'dev' ) || github.ref_name == 'master' && !(contains(github.event.head_commit.message, 'maven-release-plugin'))
         run: |
           mvn -gs /github/home/.m2/settings.xml -Dmaven.repo.local=.m2 -DskipTests clean deploy
 
