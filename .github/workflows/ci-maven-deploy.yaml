@@ -33,22 +33,6 @@ jobs:
           openssl s_client -connect ${{ secrets.PAYZAVE_NEXUS_URL }} </dev/null | sed -ne '/-BEGIN CERTIFICATE-/,/-END CERTIFICATE-/p' > ${{ secrets.PAYZAVE_NEXUS_NAME }}.cert
           keytool -import -noprompt -trustcacerts -alias ${{ secrets.PAYZAVE_NEXUS_NAME }} -file ${{ secrets.PAYZAVE_NEXUS_NAME }}.cert -keystore ${JAVA_HOME}/lib/security/cacerts -storepass ${{ secrets.PAYZAVE_KEYSTORE_PASSWORD }}
 
-      - name: SetupCache
-        uses: actions/cache@v2
-        with:
-          path: ~/.m2/repository
-          key: maven-${{ hashFiles('**/pom.xml') }}
-          restore-keys: maven-
-
-      # - name: SetupMaven
-      #   uses: actions/setup-java@v3
-      #   with: # running setup-java again overwrites the settings.xml
-      #     distribution: 'temurin'
-      #     java-version: '11'
-      #     server-id: payzave_nexus_release
-      #     server-username: MAVEN_USERNAME
-      #     server-password: MAVEN_CENTRAL_TOKEN
-
       - name: SetupMaven
         uses: whelk-io/maven-settings-xml-action@v4
         with:
@@ -136,16 +120,13 @@ jobs:
         if: contains( github.ref_name, 'develop' )
         run: |
           mvn -gs /github/home/.m2/settings.xml -Dmaven.repo.local=.m2 clean test
-        # env:
-        #   MAVEN_USERNAME: ${{ secrets.PAYZAVE_NEXUS_USER }}
-        #   MAVEN_CENTRAL_TOKEN: ${{ secrets.PAYZAVE_NEXUS_PASSWORD }}
 
       - name: prepareRelease
         if: github.ref_name == 'master' && github.event_name == 'push' && (contains(github.event.head_commit.message, 'maven-release-plugin'))
         run: |
-          mvn -B -Dmaven.repo.local=.m2 -DskipTests clean release:prepare
+          mvn -gs /github/home/.m2/settings.xml -B -Dmaven.repo.local=.m2 -DskipTests clean release:prepare
 
       - name: deployArtifact
         if: contains( github.ref_name, 'develop' ) && github.event_name == 'push' && !(contains(github.event.head_commit.message, ''))
         run: |
-          mvn -Dmaven.repo.local=.m2 -DskipTests clean deploy
+          mvn -gs /github/home/.m2/settings.xml -Dmaven.repo.local=.m2 -DskipTests clean deploy
