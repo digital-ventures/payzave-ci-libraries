@@ -2,9 +2,9 @@ on:
   workflow_call:
 jobs:
   FlywayRelease:
-    runs-on: ubuntu-latest
+    # runs-on: ubuntu-latest
     # runs-on: [self-hosted, payzave]
-    # runs-on: [self-hosted, b2p]
+    runs-on: [self-hosted, b2p]
     # container: openjdk:17-jdk-alpine3.14
     # container: gcr.io/k8s-skaffold/skaffold:v1.18.0
     container: adoptopenjdk/openjdk11:jdk-11.0.11_9-alpine
