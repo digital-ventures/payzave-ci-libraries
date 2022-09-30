@@ -121,22 +121,17 @@ jobs:
         run: |
           mvn -gs /github/home/.m2/settings.xml -Dmaven.repo.local=.m2 clean test
 
-      # - name: prepareRelease
+      # - name: Release
       #   if: github.ref_name == 'master' && !(contains(github.event.head_commit.message, 'maven-release-plugin'))
-      #   run: |
-      #     mvn -gs /github/home/.m2/settings.xml -B -Dmaven.repo.local=.m2 -DskipTests clean release:prepare
-
-      - name: Release
-        if: github.ref_name == 'master' && !(contains(github.event.head_commit.message, 'maven-release-plugin'))
-        uses: qcastel/github-actions-maven-release@master
-        with:
-          release-branch-name: "master"
-          skip-perform: true
-          version-major: false
-          version-minor: false
-          version-patch: true
-          maven-args: "-gs /github/home/.m2/settings.xml"
-          maven-options: "-Dmaven.repo.local=.m2 -DskipTests"
+      #   uses: qcastel/github-actions-maven-release@master
+      #   with:
+      #     release-branch-name: "master"
+      #     skip-perform: true
+      #     version-major: false
+      #     version-minor: false
+      #     version-patch: true
+      #     maven-args: "-gs /github/home/.m2/settings.xml"
+      #     maven-options: "-Dmaven.repo.local=.m2 -DskipTests"
 
       - name: deployArtifact
         if: contains( github.ref_name, 'dev' ) || github.ref_type == 'tag'
@@ -144,5 +139,16 @@ jobs:
         run: |
           mvn -gs /github/home/.m2/settings.xml -Dmaven.repo.local=.m2 -DskipTests clean deploy
 
+      - name: prepareRelease
+        if: github.ref_name == 'master' && !(contains(github.event.head_commit.message, 'maven-release-plugin'))
+        run: |
+          echo "TAG_VERSION=$(cat pom.xml | grep 'SNAPSHOT' | sed 's/-SNAPSHOT//' | sed 's/<version>//' | sed 's/<\/version>//')" >> ${GITHUB_ENV}
+          mvn -gs /github/home/.m2/settings.xml -B -Dmaven.repo.local=.m2 -DskipTests clean release:prepare
 
-
+      - name: deployArtifact (master)
+        if: github.ref_name == 'master' && !(contains(github.event.head_commit.message, 'maven-release-plugin'))
+        # if: contains( github.ref_name, 'dev' ) || github.ref_name == 'master' && !(contains(github.event.head_commit.message, 'maven-release-plugin'))
+        run: |
+          mv pom.xml pom.xml.backup
+          sed 's/>.*-SNAPSHOT/>${{ env.TAG_VERSION }}/' pom.xml.backup > pom.xml
+          mvn -gs /github/home/.m2/settings.xml -Dmaven.repo.local=.m2 -DskipTests clean deploy
