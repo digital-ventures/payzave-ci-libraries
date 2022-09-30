@@ -2,9 +2,9 @@ on:
   workflow_call:
 jobs:
   MavenDeploy:
-    # runs-on: ubuntu-latest
+    runs-on: ubuntu-latest
     # runs-on: [self-hosted, payzave]
-    runs-on: [self-hosted, b2p]
+    # runs-on: [self-hosted, b2p]
     # container: openjdk:17-jdk-alpine3.14
     container: maven:3.6.3-openjdk-11
     # container: openjdk:18-jdk-alpine3.15
