@@ -1,0 +1,56 @@
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'on|off|quit'
+        type: environment
+        required: true
+      environment:
+        description: 'sandbox|sandbox01|dev|dev01|sit|uat|prd|quit'
+        type: environment
+        required: true
+
+jobs:
+  Downtime:
+    runs-on: [self-hosted, b2p]
+    env:
+      DOWNTIME: ${{ inputs.action }}
+      ENV: ${{ inputs.environment }}
+    steps:
+      - name: SetupPython
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.7' 
+      
+      - name: PipInstall
+        run: |
+          pip install Jinja2
+          pip install jinja2-cli
+
+      - name: CheckOut
+        uses: actions/checkout@v3
+        with: 
+          ssh-key: "${{ secrets.SSH_PRIVATE_KEY }}"
+          ssh-strict: 'StrictHostKeyChecking=no'
+
+      - name: AzureLogin (NONPRD)
+        if: env.ENV != 'prd'
+        uses: azure/CLI@v1
+        with:
+          inlineScript: |
+            az login --service-principal -u ${{ secrets.PAYZAVE_AZURE_CLIENT_ID }} -p ${{ secrets.PAYZAVE_AZURE_CREDENTIALS }} --tenant ${{ secrets.PAYZAVE_AZURE_TENANT_ID }} --output none
+            az account set -s ${{ secrets.PAYZAVE_AZURE_SUBSCRIPTION_ID_NONPRD }}
+
+      - name: AzureLogin (PRD)
+        if: env.ENV == 'prd'
+        uses: azure/CLI@v1
+        with:
+          inlineScript: |
+            az login --service-principal -u ${{ secrets.PAYZAVE_AZURE_CLIENT_ID }} -p ${{ secrets.PAYZAVE_AZURE_CREDENTIALS }} --tenant ${{ secrets.PAYZAVE_AZURE_TENANT_ID }} --output none
+            az account set -s ${{ secrets.PAYZAVE_AZURE_SUBSCRIPTION_ID_PRD }}
+
+      - name: DowntimeExecution
+        run: |
+          chmod 777 update-az-app-gw-downtime-cli.sh
+          ls -la
+          ./update-az-app-gw-downtime-cli.sh ${{ env.DOWNTIME }} ${{ env.ENV }} ${{ secrets.PAYZAVE_AZURE_CLIENT_ID }} ${{ secrets.PAYZAVE_AZURE_CREDENTIALS }} ${{ secrets.PAYZAVE_AZURE_TENANT_ID }}
