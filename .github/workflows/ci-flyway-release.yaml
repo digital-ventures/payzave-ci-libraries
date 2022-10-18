@@ -1,3 +1,4 @@
+name: Flyway Release
 on:
   workflow_call:
 jobs:
